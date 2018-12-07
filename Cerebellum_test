@@ -1,0 +1,130 @@
+#! /usr/bin/env python
+
+import numpy as np
+from scipy import ndimage
+import nibabel as nib
+from copy import deepcopy
+from glob import glob
+from subprocess import check_call
+import argparse
+import os
+
+def _get_output(mseid):
+    num = int(mseid[3:])
+    if num > 4500: return '/data/henry11/PBR/subjects/'
+    else: return '/data/henry7/PBR/subjects/'
+
+def i_img(i, shape, img_closing, img_data, aff, sub_name, cerebellum, c_i,xfm, inputimg):
+    # i is an integer that specifies number of iterations for binary dilation
+    print('\n Running {!s} interations of dilation around the cord to get CSF intensity values'.format(i))
+    i_zero = np.zeros(shape)
+    kernel = np.ones((3,3,1))
+    if len(img_closing.shape) == 4: kernel = np.ones((3,3,1,1))
+    i_zero[ndimage.morphology.binary_dilation(img_closing, structure = kernel, iterations = i)] = 1
+    i_sub = np.subtract(i_zero, img_closing)
+    i_sub_data = img_data[np.where(i_sub == 1)]
+    i_sub_mean = np.mean(i_sub_data)
+    print('Mean intensity of voxels {!s} iterations around cord is {!s}'.format(i, i_sub_mean))
+    i_out = deepcopy(img_data)
+    i_out[np.where(img_closing == 1)] = i_sub_mean
+    i_out_fname = '{}_i{!s}_filled.nii.gz'.format(sub_name.split('.')[0], i)
+
+    if cerebellum:
+        ci = 1
+        if c_i: ci=int(c_i)
+        print('\n number of times dilating around cerebellum', ci)
+        print('Cerebellum variable is ', cerebellum)
+        nii = '.'.join(cerebellum.split('.')[:-1]) + '.nii.gz'
+        if not os.path.exists(nii):
+            check_call(['mri_convert', cerebellum, nii])
+        nii_reo = '.'.join(nii.split('.')[:-1]) + '_reo.nii.gz'
+        if not os.path.exists(nii_reo):
+            check_call(['fslreorient2std', nii, nii_reo])
+        #if os.path.exists(nii): os.remove(nii)
+        nii_xfm = '.'.join(nii.split('.')[:-1]) + '_xfm.nii.gz'
+        if not os.path.exists(nii_xfm):
+            check_call(['flirt', '-in', nii_reo, '-ref', inputimg, '-applyxfm', '-init', xfm, '-out', nii_xfm]) 
+        seg_data = nib.load(nii_xfm).get_data()
+        cerebellum_coords = np.where((seg_data == 8) | (seg_data == 47)) # 8, 47 is the freesurfer code for cerbellum
+        print('cerebellum_coords', cerebellum_coords)
+        print('i out shape', i_out.shape, 'seg data shape', seg_data.shape)
+        cerebellum_zero = np.zeros(shape)
+        cerebellum_zero[cerebellum_coords] = 1
+        cerebellum_zero[ndimage.morphology.binary_dilation(cerebellum_zero, structure=kernel, iterations=ci)] = 1
+        cerebellum_coords = np.where(cerebellum_zero != 0)
+        i_out[cerebellum_coords] = i_sub_mean
+        i_out_fname = '{}_i{!s}_filled_cerebellum.nii.gz'.format(sub_name.split('.')[0], i)    
+
+    i_nii = nib.Nifti1Image(i_out, affine=aff) 
+    nib.save(i_nii, i_out_fname)
+    print('Saved {!s} iteration at {}'.format(i, i_out_fname))
+
+
+def generate_seg(args):
+    
+    img_name = args.inputimg
+    volume = args.inputroi
+    output = volume.split('.')[0] + '.nii.gz'
+    script = '/data/henry2/arajesh/henry10_clone/SC_registration/scripts/jim_roi_to_nii.py'
+    cmd = ['python', script, '-img', img_name, '-roi', volume, '-output', output]
+    print('\n','Running command: \n {} \n'.format(cmd))
+    check_call(cmd)
+
+    sub_name = output
+    data = nib.load(sub_name).get_data()
+    aff = nib.load(img_name).affine
+    img = nib.load(img_name).get_data()
+
+    out_data = deepcopy(data)
+
+    distance = lambda a, b: np.sqrt((a[0]-b[0])**2 + (a[1]-b[1])**2)
+
+    coords = np.where(data == 1)
+    z_coords = np.unique(coords[2])
+    for z in z_coords:
+
+        com = ndimage.center_of_mass(data[:,:,z])
+        x_array = coords[0][np.where(coords[2] == z)]
+        y_array = coords[1][np.where(coords[2] == z)]
+        points = np.array(list(zip(x_array, y_array)))
+
+        radius_array = []
+        for idx in range(len(points)):
+            radius_array.append(distance(points[idx], com))
+        radius = np.mean(radius_array)
+        for x in range(np.min(x_array), np.max(x_array)+1):
+            for y in range(np.min(y_array), np.max(y_array)+1):
+                if distance((x,y), com) <= radius:
+                    out_data[x,y,z] = 1
+        binary_closing = np.zeros(out_data.shape)
+        close_structure = np.ones((2,2,2))
+        if len(out_data.shape) == 4: close_structure = np.ones((2,2,2,1)) 
+        binary_closing[ndimage.morphology.binary_closing(out_data, structure= close_structure)] = 1
+
+    if args.cerebellum:
+        T1  = '/'.join(args.cerebellum.split('/')[:-1]) + '/T1.mgz'
+        T1_nii = '/'.join(args.cerebellum.split('/')[:-1]) + '/T1.nii.gz'
+        if not os.path.exists(T1_nii):
+            check_call(['mri_convert', T1, T1_nii])
+        T1_reo = '/'.join(args.cerebellum.split('/')[:-1]) + '/T1_reo.nii.gz'
+        if not os.path.exists(T1_reo):
+            check_call(['fslreorient2std', T1_nii, T1_reo])
+        xfm = '/'.join(sub_name.split('/')[:-1])+'omat.mat'
+        if not os.path.exists(xfm):
+            check_call(['flirt', '-in', T1_reo, '-ref', args.inputimg, '-omat', xfm]) 
+
+    if args.iterate:
+        intensity = i_img(int(args.iterate), binary_closing.shape, binary_closing, img, aff, sub_name, args.cerebellum, args.ci,xfm, args.inputimg)
+    else:
+        intensity = i_img(1, binary_closing.shape, binary_closing, img, aff, sub_name, args.cerebellum, args.ci,  xfm, args.inputimg)
+    
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser('This script fills the spinal cord segmented by .roi files created by jim with the mean intensity of the voxels on the periphery of the spinal cord segmentation')
+    parser.add_argument('inputroi', help= '.roi file that has segmented the spinal cord')
+    parser.add_argument('inputimg', help= '.nii.gz file that the .roi file was created from')
+    parser.add_argument('-i', '--iterate', help='number of iterations to dilate from the boundary of the cord segmentation to find the mean of the CSF intensity')
+    parser.add_argument('-c', '--cerebellum', help='path of the aparc+aseg.mgz file that has the freesurfer segmentation of the cerebellum')
+    parser.add_argument('-ci', help='number of iterations to dilate the cerebellum mask by')
+    args = parser.parse_args()
+
+    generate_seg(args)

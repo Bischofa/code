@@ -1,0 +1,315 @@
+#!/usr/bin/perl
+# dti_info
+# by SungWon Chung (sungwon@mrsc.ucsf.edu) in 2005/02
+# modified from dcm_info to include *.MR processing capability
+# modifided by Nico Papinutto (Feb 2013) where marked with #####
+
+use Getopt::Long;
+
+#print the usage message if no parameters are given or if invalid parameters are given.
+if (@ARGV<1) {
+    print "
+    Usage:  $0  exam_dir  [series_dir]  [options]
+
+    show information of all or specified series of a *.DCM/*.MR exam
+
+    <options>
+    -a (or --all)     : show more exam info
+    -o (or --only)    : show exam info only without the series info
+    -b (or --brief)   : show info in brief format (only title and number of files)
+    -v (or --verbose) : show info in verbose format
+
+    <Example>
+    dti_info E12345
+    dti_info E12345 7
+    
+";
+    exit 0;
+}
+
+$all_flag = 0;
+$only_flag = 0;
+$brief_flag = 0;
+$verbose_flag = 0;
+GetOptions('all'     => \$all_flag,
+           'only'    => \$only_flag,
+           'brief'   => \$brief_flag,
+           'verbose' => \$verbose_flag );
+if ($brief_flag && $verbose_flag) { $brief_flag =0; }
+
+#Define Some Variables
+$exam_dir= $ARGV[0];
+if (@ARGV == 2) {
+    $series_dir_input = $ARGV[1];
+    $series_dir_input =~ s|/$|| if ( $series_dir_input =~ m|/$| );
+} else {
+    $series_dir_input = 0;
+}
+$exam_flag = 1; #indicating whether exam data need to be read or not
+
+
+#open the directory
+$exam_dir = $exam_dir . "/" unless ( $exam_dir =~ m|/$| );
+opendir DH, $exam_dir or die "Couldn't open the directory: $exam_dir \n";
+##### folder sorted in numerical order
+@list = sort { $a <=> $b } readdir(DH);
+
+for (@list) { #loop through each series directory
+
+    next if ( ($_ == ".") || ($_ == "..") );
+    next if ( ($series_dir_input != 0) && ($series_dir_input ne $_) );
+    $series_dir_name = $_;
+    $series_dir = $exam_dir . $_ . "/";
+    if (-d $series_dir) {
+        @files = <"$series_dir/*.DCM*" "$series_dir/*.dcm*" "$series_dir/*.MR*" "$series_dir/*.mr*">;
+        $num_files = @files;
+        if ($num_files == 0) {
+            if ($exam_flag) {
+                print "No DICOM/MR files found. Check for the correct exam/series path. \n\n";
+                exit 0;
+            } else {
+                next;
+            }
+        }
+        if ( $files[0] =~ /gz$/ ) { #unzip if zipped
+            system ("gunzip $files[0]");
+            $files[0] =~ s/\.gz//;
+            if (!(-e $files[0])) {
+                print "Failed to get the information from series ".$series_dir_name."\n";
+                print "\n";
+                next;
+            }
+        }
+        if ($exam_flag) {
+
+            if ( ($files[0] =~ /\.DCM/) || ($files[0] =~ /\.dcm/) ) {
+
+                $file_type = 'DICOM (*.DCM)';
+
+                 #use dcmdump to get series data from DICOM header
+                foreach $_ (`dcmdump $files[0]`) {
+                    #integer seperated by space, float/string by [ ] in dcmdump result
+                    if    ($_=~/0008,0020/) { @exam_date =  split(/[\[\]]/, $_); }  # Exam date
+                    elsif ($_=~/0008,0030/) { @exam_time =  split(/[\[\]]/, $_); }  # Exam time
+                    elsif ($_=~/0010,0010/) { @pt_name =    split(/[\[\]]/, $_); }  # Patient Name
+                    elsif ($_=~/0020,0010/) { @studyid =    split(/[\[\]]/, $_); }  # Study ID
+                    elsif ($_=~/0008,1010/) { @scanner =    split(/[\[\]]/, $_); }  # Scanner
+                    elsif ($_=~/0008,1090/) { @model =      split(/[\[\]]/, $_); }  # Manufacturer model
+                    elsif ($_=~/0008,1030/) { @study =      split(/[\[\]]/, $_); }  # Study description
+                    elsif ($_=~/0010,0020/) { @mrn =        split(/[\[\]]/, $_); }  # Patient ID (MRN)
+                    elsif ($_=~/0018,1030/) { @protocol =   split(/[\[\]]/, $_); }  # Protocol
+                }
+                $exam_date = $exam_date[1];
+                $exam_date = substr($exam_date,0,4).'/'.substr($exam_date,4,2).'/'.substr($exam_date,6,2);
+                $exam_time = $exam_time[1];
+                $exam_time = substr($exam_time,0,2).':'.substr($exam_time,2,2).':'.substr($exam_time,4,2);
+                $pt_name = $pt_name[1];
+                $studyid = $studyid[1];
+                $scanner = $scanner[1];
+                $model = $model[1];
+                $study = $study[1];
+                $mrn = $mrn[1];
+                $protocol = $protocol[1];
+
+            } else {
+
+                $file_type = 'AWMR (*.MR)';
+
+                 #use idump to get series data from MR header
+                foreach $_ (`idump -c $files[0]`) {
+                    if    ($_=~/Exam date/)         { @exam_date =  split(/: /, $_); }  # Exam date
+                    elsif ($_=~/Patient Name/)      { @pt_name =    split(/: /, $_); }  # Patient Name
+                    elsif ($_=~/Exam Number/)       { @studyid =    split(/: /, $_); }  # Study ID
+                    elsif ($_=~/Creator/)           { @scanner =    split(/: /, $_); }  # Scanner
+                    elsif ($_=~/Product ID/)        { @model =      split(/: /, $_); }  # Manufacturer model
+                    elsif ($_=~/Exam Description/)  { @study =      split(/: /, $_); }  # Study description
+                    elsif ($_=~/Patient ID/)        { @mrn =        split(/: /, $_); }  # Patient ID (MRN)
+                    elsif ($_=~/Scan Protocol Name/){ @protocol =   split(/: /, $_); }  # Protocol
+                }
+                chomp(@exam_date,@pt_name,@studyid,@scanner,@model,@study,@mrn,@protocol);
+                $exam_date = $exam_date[1];
+                $exam_time = 'n/a';
+                $pt_name = $pt_name[1];
+                $studyid = $studyid[1];
+                $scanner = $scanner[1];
+                $model = $model[1];
+                $study = $study[1];
+                $mrn = $mrn[1];
+                $protocol = $protocol[1];
+
+            }
+
+            if ($verbose_flag) {
+                print "\n";
+                print "Exam Number : $studyid \n";
+                print "File Type   : $file_type \n";
+                if ($all_flag) {
+                    print "Patient Name: $pt_name \n";
+                    print "MRN (Pt ID) : $mrn \n";
+                    print "Date        : $exam_date \n";
+                    print "Time        : $exam_time \n";
+                }
+                print "Description : $study \n";
+                print "Protocol    : $protocol \n";
+                print "Station     : $scanner ($model) \n";
+                print "\n";
+                $exam_flag = 0; #this part run only once
+                if ($only_flag) {
+                    exit 0;
+                }
+            } else {
+                print "\n";
+                print "Exam $studyid $study ($protocol) $file_type  \n";
+                if ($all_flag) {
+                    print "$pt_name ($mrn) in $exam_date $exam_time at $scanner ($model) \n";
+                }
+                print "\n";
+                $exam_flag = 0; #this part run only once
+                if ($only_flag) {
+                    exit 0;
+                }
+            }
+        }
+
+        if ( ($files[0] =~ /\.DCM/) || ($files[0] =~ /\.dcm/) ) {
+            
+            #initialize
+            @ti = (0,0);
+
+            foreach $_ (`dcmdump $files[0]`) {
+                #integer seperated by space, float/string by [ ] in dcmdump result
+                if    ($_=~/0008,103e/) { @description =    split(/[\[\]]/, $_); }  # Series description
+                elsif ($_=~/0008,0031/) { @series_time =    split(/[\[\]]/, $_); }  # Series time
+                elsif ($_=~/0018,0050/) { @slice_thickness =split(/[\[\]]/, $_); }  # Slice thickness
+                elsif ($_=~/0018,0080/) { @tr =             split(/[\[\]]/, $_); }  # TR
+                elsif ($_=~/0018,0081/) { @te =             split(/[\[\]]/, $_); }  # TE
+                elsif ($_=~/0018,0082/) { @ti =             split(/[\[\]]/, $_); }  # TI
+                elsif ($_=~/0018,0083/) { @nex =            split(/[\[\]]/, $_); }  # NEX (number of averages)
+                elsif ($_=~/0018,0088/) { @slice_spacing =  split(/[\[\]]/, $_); }  # Slice spacing
+                elsif ($_=~/0019,109c/) { @psd =            split(/[\[\]]/, $_); }  # PSD
+                elsif ($_=~/0019,10b9/) { @b_value =        split(/[\[\]]/, $_); }  # b value
+                elsif ($_=~/0020,0011/) { @series_num =     split(/[\[\]]/, $_); }  # Series number
+                elsif ($_=~/0021,104f/) { @slice_num =      split(/\s/, $_); }      # Number of slices in each volume
+                elsif ($_=~/0028,0010/) { @x_dim =          split(/\s/, $_); }      # Image width(rows)
+                elsif ($_=~/0028,0011/) { @y_dim =          split(/\s/, $_); }      # Image height(columns)
+                elsif ($_=~/0028,0030/) { @xy_size =        split(/[\[\]\\]/, $_); }# Pixel size (x,y)
+            }
+            $description = $description[1];
+            $series_time = $series_time[1];
+            $series_time = substr($series_time,0,2).':'.substr($series_time,2,2).':'.substr($series_time,4,2);
+            $slice_thickness = $slice_thickness[1];
+            $tr = $tr[1];
+            $te = $te[1];
+            $ti = $ti[1];
+            $nex = $nex[1];
+            $slice_spacing = $slice_spacing[1]-$slice_thickness;
+            $psd = $psd[1];
+            $b_value = $b_value[1];
+            $series_num = $series_num[1];
+            $slice_num = $slice_num[2];
+            $x_dim = $x_dim[2];
+            $y_dim = $y_dim[2];
+            $x_size = $xy_size[1];
+            $y_size = $xy_size[2];
+        } else {
+
+            foreach $_ (`idump -c $files[0]`) {
+                if    ($_=~/Series Description/)    { @description =    split(/: /, $_); }  # Series description
+                elsif ($_=~/Slice Thickness \(mm/)  { @slice_thickness= split(/: /, $_); }  # Slice thickness
+                elsif ($_=~/Pulse repetition time/) { @tr =             split(/: /, $_); }  # TR
+                elsif ($_=~/Pulse echo time/)       { @te=              split(/: /, $_); }  # TE
+                elsif ($_=~/Pulse inversion time/)  { @ti =             split(/: /, $_); }  # TI
+                elsif ($_=~/Number of Excitations/) { @nex =            split(/: /, $_); }  # NEX (number of averages)
+                elsif ($_=~/Spacing between scans/) { @slice_spacing =  split(/: /, $_); }  # Slices spacing
+                elsif ($_=~/Pulse Sequence Name/)   { @psd =            split(/: /, $_); }  # PSD
+                elsif ($_=~/Series Number:/)        { @series_num =     split(/: /, $_); }  # Series number !there's also series number for this image
+                elsif ($_=~/Number of slices/)      { @slice_num =      split(/: /, $_); }  # Number of slices in each vol
+                elsif ($_=~/width \(pixels/)        { @x_dim =          split(/: /, $_); }  # Image width(rows)
+                elsif ($_=~/height \(pixels/)       { @y_dim =          split(/: /, $_); }  # Image height(columns)
+                elsif ($_=~/Image pixel size - X/)  { @x_size =         split(/: /, $_); }  # Pixel size in x
+                elsif ($_=~/Image pixel size - Y/)  { @y_size =         split(/: /, $_); }  # Pixel size in y
+            }
+            chomp(@description,@slice_thickness,@tr,@te,@nex,@slice_spacing,@psd,@series_num,@slice_num,@x_dim,@y_dim,@xy_size);
+            $description = $description[1];
+            $series_time = 'n/a';
+            $slice_thickness = $slice_thickness[1];
+            $tr = $tr[1]/1000;
+            $te = $te[1]/1000;
+            $ti = $ti[1]/1000;
+            $nex = $nex[1];
+            $slice_spacing = $slice_spacing[1];
+            $psd = $psd[1];
+            $b_value = 0;  # I don't know where b value is shown by idump
+            $series_num = $series_num[1];
+            $slice_num = $slice_num[1];
+            $x_dim = $x_dim[1];
+            $y_dim = $y_dim[1];
+            $x_size = $x_size[1];
+            $y_size = $y_size[1];
+        }
+        
+        if ($slice_num != 0) {
+            if ($num_files % $slice_num == 0) {
+                $vol_num = $num_files / $slice_num;
+            }
+            else {
+                $vol_num = "??";
+            }
+        }
+        else {
+            $slice_num="??";
+            $vol_num="??";
+        }
+
+        $x_size = sprintf("%.2f",$x_size);
+        $y_size = sprintf("%.2f",$y_size);
+        $slice_thickness = sprintf("%.2f",$slice_thickness);
+        $slice_spacing = sprintf("%.2f",$slice_spacing);
+
+        $fov_x = $x_dim * $x_size;
+        $fov_x = sprintf("%.0f",$fov_x);
+        $fov_y = $y_dim * $y_size;
+        $fov_y = sprintf("%.0f",$fov_y);
+        $fov_z = $slice_num * ($slice_thickness+$slice_spacing);
+        $fov_z = sprintf("%.0f",$fov_z);
+
+        $nex = sprintf("%.0f",$nex);
+        $tr = sprintf("%.0f",$tr);
+        $te = sprintf("%.0f",$te);
+        $ti = sprintf("%.0f",$ti);
+        $b_value = sprintf("%.0f",$b_value);
+
+        if ($verbose_flag) {
+            print "----------------------------------------------- \n";
+            print "Series $series_num   (directory:$series_dir_name) \n";
+            print "Series Description : $description \n";
+            if ($all_flag) {print "Series Time (from) : $series_time \n"; }
+            print "PSD = $psd";
+            if ($b_value !=0) { print ", b=${b_value}"; }
+            print "\n";
+            print "Number of voxels = $x_dim x $y_dim x $slice_num \n";
+            print "Voxel sizes (mm) = $x_size x $y_size x $slice_thickness/$slice_spacing \n";
+            print "Field of view (mm) = $fov_x x $fov_y x $fov_z \n";
+            print "NEX (number of acquisitions) = $nex \n";
+            print "TR / TE / TI (msecs) = $tr / $te / $ti \n";
+            print "Number of total image files = $num_files \n";
+            print "Number of volumes = $vol_num ($num_files/$slice_num) \n";
+            print "\n";
+        } elsif ($brief_flag) {
+            print "Series $series_dir_name   $description   (${slice_num}x${vol_num}=${num_files}) \n";
+        } else {
+            if ($all_flag) {print "from $series_time  "; }
+            print "Series $series_dir_name  ";
+            print "$description ($psd)  ${x_size}x${y_size}x${slice_thickness}";
+            if ($slice_spacing != 0) { print "/$slice_spacing  "; } else { print "  "; }
+            print "${slice_num}x${vol_num}=${num_files}  ";
+            if ($ti != 0) { print "TR/TE/TI $tr/$te/$ti  "; } else { print "TR/TE $tr/$te  "; }
+            if ($nex != 1) { print "NEX $nex  "; }
+            print "\n";
+        }
+    }
+
+} #loop through each series directory
+
+print "\n";
+exit 0;

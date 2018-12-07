@@ -1,0 +1,14 @@
+#!/bin/sh
+# Jimbo is a shell script that allows you to open files in Jim without specifying the whole filename path: for instance from /data/henry7/PBR/subjects/mse1/nii/ you can type <Jimbo ms1-mse1-MPRAGE.nii.gz> instead of <Jim /data/henry7/PBR/subjects/mse1/nii/ms1-mse1-MPRAGE.nii.gz>
+JIM_HOME=/netopt/rhel7/versions/Jim/Jim7
+PATH=${PATH}:${JIM_HOME}:${JIM_HOME}/Unix
+export JIM_HOME PATH
+PROG=`basename $0`
+BASE=$( echo "$@" | cut -c-5)
+
+if [ $BASE  == "/data" ]
+then
+    ${JIM_HOME}/Jim $@
+else
+    ${JIM_HOME}/Jim $(pwd)/$@
+fi
